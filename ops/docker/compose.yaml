@@ -1,0 +1,157 @@
+# NGINX2Root 4-arm 랩 + CVE 노출 변형
+# 기동: docker compose -f ops/docker/compose.yaml --profile core up -d --build
+#   core  = A1/A2/A3/A4 (RESEARCH-PLAN §3 기본 4-arm)
+#   cve123633 / cve123634 / cve121810 / cve113425 = 각 CVE 노출 변형 + 헬퍼
+# 포트(호스트): A1 8443, A2 8444, A3 8445, A4 8446, 123633 8447,
+#   123634 8448, 121810 8449(tcp)/8449(udp), 113425 8143
+name: nginx2root-lab
+
+x-nginx-base: &nginx-base
+  ulimits:
+    core: { soft: -1, hard: -1 }
+  volumes:
+    - cores:/cores
+  restart: unless-stopped
+
+services:
+  # ── 기본 4-arm ────────────────────────────────────────────────
+  a1-vuln:
+    <<: *nginx-base
+    build: { context: ., args: { NGX_VERSION: "1.31.8" } }
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-a1
+    ports: ["8443:443"]
+    volumes:
+      - ./conf/h2on.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+
+  a1-vuln-debug:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-a1dbg
+    profiles: [debug]
+    ports: ["8543:443"]
+    volumes:
+      - ./conf/h2on-debug.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+
+  a2-patched:
+    <<: *nginx-base
+    build: { context: ., args: { NGX_VERSION: "1.31.9" } }
+    image: nginx2root/lab:1.31.9
+    container_name: n2r-a2
+    ports: ["8444:443"]
+    volumes:
+      - ./conf/h2on.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+
+  a3-mitigated:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-a3
+    ports: ["8445:443"]
+    volumes:
+      - ./conf/h2off.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+
+  a4-control:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.9
+    container_name: n2r-a4
+    ports: ["8446:443"]
+    volumes:
+      - ./conf/h2on.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+
+  a4-loadgen:  # A4 대조군: 정상 h2 부하 (탐지 룰 오탐 기준선)
+    image: curlimages/curl:8.10.1
+    container_name: n2r-a4load
+    profiles: [a4]
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "while true; do
+        curl -sk --http2 https://a4-control/ -o /dev/null;
+        sleep 0.2;
+      done"
+    depends_on: [a4-control]
+
+  # ── CVE 노출 변형 ─────────────────────────────────────────────
+  slowback:
+    build: { context: ., dockerfile: Dockerfile.helper }
+    image: nginx2root/helper:slowback
+    container_name: n2r-slowback
+    profiles: [cve123633, cve121810]
+    command: ["python3", "/srv/slowback.py"]
+
+  cve123633:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-123633
+    profiles: [cve123633]
+    ports: ["8447:443"]
+    volumes:
+      - ./conf/proxy.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+    depends_on: [slowback]
+
+  dnssim:
+    build: { context: ., dockerfile: Dockerfile.helper }
+    image: nginx2root/helper:dnssim
+    container_name: n2r-dnssim
+    profiles: [cve123634]
+    command: ["python3", "/srv/dnssim.py"]
+
+  cve123634:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-123634
+    profiles: [cve123634]
+    ports: ["8448:443"]
+    volumes:
+      - ./conf/resolver.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+    depends_on: [dnssim]
+
+  cve121810:
+    <<: *nginx-base
+    build:
+      context: .
+      args:
+        NGX_VERSION: "1.31.8"
+        BASE: debian:trixie-slim   # QUIC TLS: OpenSSL 3.5+ 권장
+    image: nginx2root/lab:1.31.8-quic
+    container_name: n2r-121810
+    profiles: [cve121810]
+    ports: ["8449:443", "8449:443/udp"]
+    volumes:
+      - ./conf/quic.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+    depends_on: [slowback]
+
+  authsim:
+    build: { context: ., dockerfile: Dockerfile.helper }
+    image: nginx2root/helper:authsim
+    container_name: n2r-authsim
+    profiles: [cve113425]
+    command: ["python3", "/srv/authsim.py"]
+
+  imapsim:
+    build: { context: ., dockerfile: Dockerfile.helper }
+    image: nginx2root/helper:imapsim
+    container_name: n2r-imapsim
+    profiles: [cve113425]
+    command: ["python3", "/srv/imapsim.py"]
+
+  cve113425:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-113425
+    profiles: [cve113425]
+    ports: ["8143:143"]
+    volumes:
+      - ./conf/mail.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+    depends_on: [authsim, imapsim]
+
+volumes:
+  cores:

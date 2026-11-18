@@ -1,0 +1,5 @@
+# 헬퍼 서버 (slowback/dnssim/authsim/imapsim) — 표준 라이브러리만 사용
+FROM python:3.12-slim
+WORKDIR /srv
+COPY helpers/*.py /srv/
+CMD ["python3", "/srv/slowback.py"]

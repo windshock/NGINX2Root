@@ -1,0 +1,61 @@
+# ESCALATION STATUS — 1차 세션 실험 보고 (2026-11-19)
+
+체계: 모든 판정은 **실측** 근거. 결론어 4종(확정/지지됨/미지지/관측불가)만 사용.
+환경: Mac (Docker linux/arm64 위 amd64 에뮬 — **avx512 부재 실측**, `grep avx512 /proc/cpuinfo` 공백).
+
+## 1. 요약
+
+| 실험 | 대상 | 결과 | 판정 |
+|---|---|---|---|
+| E0a ep01 | A1 (본문 24B) | 풀 요청 2,728개 > max_concurrent_streams(128) → 오라클 미달성 | 관측불가 (설계 오류 — 896B 프로파일로 수정) |
+| E0a ep02 | A1 (본문 896B) | sendall 600s 타임아웃 — nginx가 플라이트 미소비 (Recv-Q 2.58MB 정지) | 관측불가 (원인 미상 — §3 참조) |
+| **E0a ep03** | **A1dbg (worker 1, 본문 896B)** | **"cleanup over-credit confirmed" — 근본 원인 오라클 재현** | **확정** |
+| E0a ep04 | A2 (1.31.9 패치) | 오라클 미달성 (스트림 리셋 단계부터 상이) | 미지지 (패치 특이성 — 정상) |
+| E0a ep05 | A3 (h2 off) | TLS `no application protocol` — h2 협상 거부 | 미지지 (완화 특이성 — 정상) |
+| E0b ep06 | A1 풀 체인(≈60GiB) | 진행 중 (백그라운드) | 진행 중 |
+
+**핵심 결과: CVE-2026-123007의 근본 원인(클린업 오버크레딧 → 부호 없는 검증 언더플로 수용)이
+AVX-512 없는 에뮬 환경에서도 재현됨.** 54.4초, 클라이언트→서버 21,782,171B (≈21.7MB).
+오라클 3요소(타깃 스트림 FLOW_CONTROL_ERROR 리셋 / 10바이트 공개 방출 / 손상 커넥션에서
+PING ACK 수신) 모두 관측. 디버그 로그로 `http2 close stream 155` 이벤트 처리 확인.
+
+## 2. 이번 run의 신호
+
+- **A1dbg 서버 로그** (23:02): 이벤트 프레임 소비 → `http2 close stream 155` → PING ACK 송신 —
+  오버크레딧 상태에서 커넥션이 살아 프레임을 수용 = 검증 우회의 직접 관측 (deep-analysis §2-⑤와 일치)
+- **A2(패치)**: 같은 입력으로 오라클 미달성 — `send_queued` 반영 검증식이 회계 파괴를 차단하는
+  방향의 실측 차이 (정확히 어느 단계에서 갈리는지는 A2 디버그 실행으로 보강 가능 — 남은 것 §5)
+- **A3(완화)**: ALPN h2 거부 — 완화 유효성 실측 (DEFENDER-GUIDE §2 근거로 반영)
+
+## 3. 시행착오 (보존)
+
+1. **ep01**: 본문 24B → 소진 방정식에 풀 요청 2,728개 필요 → nginx 기본 max_concurrent_streams
+   128 초과. 교정: 랩 이미지 index.html을 정확히 896B로 고정 (Rapid7 프로파일 전제 재현).
+   트리거 자체는 프로브 측정으로 적응하나, 스트림 수 폭증은 프로파일 문제임을 학습.
+2. **ep02**: non-debug A1(worker 4)에서 nginx가 14.4MB 플라이트 소비 정지 (Recv-Q 2.58MB 고정,
+   2분+ 무변화) → 클라이언트 sendall 600s 타임아웃. A1dbg(worker 1)에서는 동일 로직 통과.
+   가설: (a) 에뮬 타이밍·이벤트 루프 지연 누적 (b) worker 수에 따른 커넥션-워커 배치 차이 —
+   미확정. A1 재시도 예정(§5).
+
+## 4. 자산
+
+| 파일 | 역할 |
+|---|---|
+| `exploit/trigger/trigger_123007.py` | 포팅 트리거 (적응형 본문 측정·episode 기록·--smoke) |
+| `exploit/common/{h2,rawtls,episode}.py` | 공용 프레임/TLS/기록 모듈 |
+| `ops/e0.sh` | E0 러너 (프레시 힙 restart·클라이언트 컨테이너·서버 로그 크로스체크) |
+| `exploit/results/CVE-2026-123007/{a1,a1dbg,a2,a3}/ep*/attempt_01.json` | episode 기록 |
+
+## 5. 남은 과제 (다음 세션)
+
+1. **E0b 완료 판정** (ep06, 진행 중): 크래시 여부 + 전송량·소요시간 기록. 에뮬 처리량 한계로
+   장시간 소요 예상 — 실패 시 "Mac 관측불가, DFIRtx 이관" 판정도 유효 (RESEARCH-PLAN §1-2 계측 비판 #3)
+2. A2 디버그 arm 실행 — 패치가 정확히 어느 단계에서 궤를 분기시키는지 관측 (oracle-reset vs oracle-sync)
+3. ep02 정지 원인 재현/분석 (A1 재시도 ± worker_processes 고정)
+4. DFIRtx 접근 — 풀 RCE(G2 게이트) + 캐릭터라이징
+5. UAF 4건 트리거 개발 (P3) — 랩 변형(conf)·헬퍼는 구비 완료
+
+## 6. 11/19 2차 갱신 — E0b 중간 관측 (23:1x)
+
+- E0b ep06 (A1 full) 백그라운드 진행 중. 클라이언트 컨테이너 활동, A1 Recv-Q 상승 관측됨.
+- 진행률·전송량은 attempt JSON `bytes_tx`와 트랜슈 로그로 기록 예정.
