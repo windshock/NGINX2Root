@@ -55,7 +55,26 @@ PING ACK 수신) 모두 관측. 디버그 로그로 `http2 close stream 155` 이
 4. DFIRtx 접근 — 풀 RCE(G2 게이트) + 캐릭터라이징
 5. UAF 4건 트리거 개발 (P3) — 랩 변형(conf)·헬퍼는 구비 완료
 
-## 6. 11/19 2차 갱신 — E0b 중간 관측 (23:1x)
+## 6. 11/19 2차 갱신 — E0b 1차 시도 관측 (23:0x-23:1x)
 
-- E0b ep06 (A1 full) 백그라운드 진행 중. 클라이언트 컨테이너 활동, A1 Recv-Q 상승 관측됨.
-- 진행률·전송량은 attempt JSON `bytes_tx`와 트랜슈 로그로 기록 예정.
+- ep06 (A1 full): 이벤트 플라이트 전송 중 **클라이언트 sendall 600s 타임아웃**. 서버측:
+  - Recv-Q가 1,229,742B에서 60초+ 완전 고정 (ep02는 2,579,386B — 정지값은 회차별 상이)
+  - nginx 에러 로그 **완전 무음** (flood/timeout/prematurely closed 부재) — 이벤트 루프
+    정체 징후 (read 이벤트 미처리 추정)
+  - ep02(스모크)와 동일 패턴 → **a1(worker auto=10)에서 재현성 있는 정지**
+- 정지 vs 통과 조건 격리: a1dbg(worker 1)는 ep03에서 동일 플라이트 통과 →
+  후보 변수: worker_processes 수, 로그 레벨, 타이밍. ep07(a1dbg full)로 격리 진행 중.
+
+## 7. 11/19 3차 갱신 — E0b 상태 및 소스 단서 (23:2x)
+
+- **소스 단서 (실측, ngx_http_v2_read_handler)**: 읽기 루프는
+  `h2c->total_bytes / 8 > h2c->payload_bytes + 1048576` 시 "http2 flood detected"로
+  GOAWAY — ep02/ep06에서 이 로그는 **없었음** → 플러드 검사 발동이 아니라 그 이전에
+  read 이벤트 자체가 진행되지 않은 것. `send_output_queue`의 `send_timeout` 타이머도
+  발동 안 함(에러 무음) → nginx worker가 해당 커넥션의 이벤트 처리를 멈춘 상태.
+- ep07 (a1dbg full) 백그라운드 진행 중 — 결과는 attempt_01.json + crash_log.txt로 기록.
+- **현재까지의 E0 결론 (사전 고정 판정 규칙 적용)**:
+  - 오버크레딧(근본 원인) 재현: **확정** (AVX-512 불요 실측)
+  - 패치/완화 특이성: **확정** (A2 오라클 미달성, A3 h2 거부)
+  - Mac 에뮬에서 크래시(E0b): **관측불가 상태로 진행 중** — a1 정지 원인 규명 또는
+    DFIRtx 이관 필요 (RESEARCH-PLAN §1-2 계측 비판 #3 그대로 적용)
