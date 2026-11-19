@@ -125,3 +125,29 @@ PING ACK 수신) 모두 관측. 디버그 로그로 `http2 close stream 155` 이
   704 이벤트, 그러나 ALERT/crash 없음). 경합이 외부 타이밍만으로는 좁음.
   가설 재설계 후보(RESEARCH-PLAN §4의 1회 허용분): **CNAME 응답 경로**(8492a8b8a 인접 코드)
   + SRV — dnssim에 CNAME 지원 추가 필요. 다음 세션 과제.
+
+## 9. 11/19 5차 갱신 — 🎯🎯 R-확정: 풀 RCE 재현 성공 (ep01-rce)
+
+**인증 없는 HTTP/2 입력 → NGINX worker 권한 코드 실행 체인 완전 재현.**
+
+| 항목 | 값 (실측) |
+|---|---|
+| 환경 | DFIRtx worker-dev01 pod 네이티브 amd64 (avx512f/vl) |
+| 타깃 | **nginx@sha256:5ab5b0b…** — Rapid7 재현문서가 검증한 공식 이미지 digest와 동일 (Image ID 확인) |
+| 프로파일 | golden-nginx-1.31.8-debian13-amd64 (수정 없이 그대로 적용) |
+| 클라이언트 deps | cryptography 49.0.0 (requirements 정확 버전) + streamer `nginx-rce-streamer/2` 재빌드 |
+| 소요 | **293.71초**, 평문 **119.02 GiB**, 보조 연결 16 |
+| ASLR 해석 | H=0x55f304b71020 · nginx=0x55f302cc0840 · libc=0x7fdd815cd000 · system=0x7fdd81620090 (인밴드 ELF 심볼 해석) |
+| **캐너리 판정** | **R-확정** — /tmp/n2r-canary-01, /tmp/n2r-canary-id 모두 **uid:gid=101:101**(nginx worker) 소유. 파일 존재 + 소유자 이중 오라클 |
+| episode | `exploit/results/CVE-2026-123007/a1-dfirtx/ep01-rce/` + exploit 로그 |
+
+- 사전 고정 판정(GOAL §2): **R (RCE) = 캐너리 + 모니터 이중 확인 → 확정.**
+- 의의: 공개 PoC의 RCE 주장이 **우리 랩에서 처음부터 끝까지 검증**됨. 프로파일 수정 없이
+  원본 그대로 적용됨 — EXTERNAL-REVIEW의 "버전 전용 프로파일은 부족" 경고가 예측한 대로,
+  공식 이미지 digest 고정이 정합성을 결정.
+- 랩 시간 참고: CNI 경유로 Rapid7 기록(189-223s)보다 ~70s 느림 (293s) — 대역폭 차이일 뿐,
+  성공 조건에는 영향 없음. **[측정]**
+- DEFENDER-GUIDE §3-A를 실측 근거로 갱신: RCE 성공 시 worker 계정(101:101)의 산출물이 남는다는
+  사실이 이제 재현된 사실.
+- 진행 중: N=10 기준선 (ep02-rce~ep10-rce, episode마다 pod 재생성으로 독립 표본) —
+  완료 시 성공률 산출 → RESEARCH-PLAN §5-1.

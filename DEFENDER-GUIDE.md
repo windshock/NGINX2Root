@@ -79,7 +79,12 @@ CDN/WAF 프런트가 있다면: 외부 h2를 프런트에서 **완전 종단**�
 # 또는 EDR에서 nginx worker PID의 자식 execve 트리거
 ```
 정상 운영에서 nginx worker가 `/bin/sh`·`curl`·`touch` 등을 실행할 일은 없다.
-부모-자식 UID·PID 확인 후 알림. [미검증-운영: 랩에서 P4 e2e 성공 시 모니터 로그로 실측 예정]
+부모-자식 UID·PID 확인 후 알림.
+**[랩 실측 확정 2026-11-19]**: 본 저장소의 e2e 재현(DFIRtx, 공개 PoC 체인 + 무해 캐너리)에서
+`system()` 실행 결과가 **worker 실행계정(공식 이미지 uid:gid=101:101) 소유 파일**로 관측됨 —
+`exploit/results/CVE-2026-123007/a1-dfirtx/ep01-rce/`. 즉 RCE 성공 시 worker 계정이
+execve한 프로세스와 그 산출물이 반드시 남는다 → 3-A는 이론 근거가 아니라 **재현된 사실**.
+(실패한 익스플로잇 시도는 자식 프로세스 없이 크래시만 남김 — 3-D 참조)
 
 ### 3-B. 이상 h2 연결 통계 — 트리거/그루밍 정황 (다중 신호 상관용)
 트리거 특성(본 저장소 PoC 분석 기반, EXTERNAL-REVIEW):

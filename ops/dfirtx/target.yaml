@@ -58,7 +58,10 @@ spec:
           volumeMounts: [{ name: certs, mountPath: /certs }]
       containers:
         - name: nginx
-          image: nginx:1.31.8
+          # e2e(RCE) 정밀도: Rapid7 재현문서가 검증한 공식 이미지 digest 고정
+          # (1.31.8 trixie, glibc 2.41 계열 — golden-nginx-1.31.8-debian13-amd64 프로파일 대응).
+          # 트리거 전용이라면 태그로 환원 가능.
+          image: nginx@sha256:5ab5b0b01097420873a3f3330f44248e34a3c2a3e8d5ee30658aeae8cb7435da
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args:
