@@ -1,6 +1,7 @@
 # NGINX2Root — NGINX 2026-11-18 보안 릴리스 취약점 연구 (분석 · e2e · 방어)
 
 작성일: 2026-11-19 · owner: windshock (OpenJDK2Shell 후속 연구)
+저장소: https://github.com/windshock/NGINX2Root (public)
 시드 문서: `../nginx2root_java4shell_comparison_2026-11-19.md` (브리핑, [R1]~[R12] 근거 체계를 이 저장소에서 그대로 인용)
 
 ## 연구 대상
