@@ -233,3 +233,46 @@ PING ACK 수신) 모두 관측. 디버그 로그로 `http2 close stream 155` 이
 | `exploit/trigger/trigger_123633.py` + `ops/run_123633.sh` + `conf/proxy-small.conf` | drain UAF 트리거 체계 |
 | `exploit/trigger/trigger_123634.py` (--mode direct/cname/cname-nx) + dnssim CNAME | resolver UAF 트리거 체계 |
 | `exploit/results/CVE-2026-123633/a1/ep01-10/` · `CVE-2026-123634/a1/ep01-10/` | episode + 서버 관측 기록 |
+
+## 12. 11/20 8차 갱신 — E-V 증거 검증: 탐지 시그니처 실측 확정 (ep12-verif)
+
+부모 가이드 체크리스트의 "미실측 추론" 항목을 실측으로 승격시키는 검증 실험.
+h2_hunt 포맷 + 전체 컨테이너 로그 수집 conf로 타깃을 재배포하고 RCE 1회를 재실행
+(R-확정, 311.99s, 119.02 GiB — h2_hunt conf가 프로파일 정합성을 깨지 않음도 확인).
+
+### 검증 결과 (타깃 컨테이너 로그 전량 529줄, `ep12-verif/target_container_logs.txt`)
+
+| 항목 | 이전 | 실측 |
+|---|---|---|
+| ① 캐리어 흔적 | 추론 (16777xxx 예상) | **request_length=50331645 × 320줄** — HEADERS+CONTINUATION
+  3프레임 합산(3×16,777,215). **원 제안 grep은 실제 값을 놓쳤을 것** → 시그니처 교정:
+  "max frame size 정수배의 초대형 request_length 다발" |
+| ② 커넥션 요청 수 | 74까지 직접 관측 | **requests=519** (PoC 회계 74+3+320+96+…와 정확 일치) |
+| ④ glibc 메시지 | 미캡처 | **`double free or corruption (!prev)`** — stderr 평문. SIGCHLD와
+  signal 6 사이 타이밍 |
+| ③ 재확인 | 3 episode | 동일: worker SIGCHLD(자식 포크=system()) → signal 6 (SIGABRT) |
+| ⑤ auditd | 미실측 | 미실측 유지 (랩 무 auditd — EDR 환경 검증은 별도 과제) |
+
+### 운영자 시그니처 최종본 (전 항목 실측)
+
+```
+access.log: request_length=50331645 ×320 / 한 출발지 / 수 분   ← 캐리어 (15 GiB 회계)
+access.log: requests=519 (단일 conn)                          ← 커넥션 소진
+error.log:  worker의 "SIGCHLD received from N"                ← system() 실행 (자식 포크)
+stderr:     "double free or corruption (!prev)"               ← 힙 손상 텍스트 증거
+error.log:  exited on signal 6 (RCE 후 지연 붕괴) vs signal 11 (시도 — 실행 전 OOB)
+```
+
+### 시사점
+
+1. **추론 시그니처는 실측 전까지 신뢰 금지** — ①의 예상값(16777xxx)은 실측값(50331645)과
+   달랐다. CONTINUATION 프레임이 request_length에 합산되는 것이 원인.
+2. 성공 RCE는 무음이 아니다: SIGCHLD + glibc 텍스트 + signal 6의 3중 흔적.
+   glibc 메시지는 nginx error.log가 아닌 **프로세스 stderr** 경로 — 수집 설계 주의.
+3. DEFENDER-GUIDE §5-4에 실측 표 반영 완료 (단일 PoC 프로파일 한정 명시).
+
+### 기타
+
+- A2(패치 arm) 특이성: conf 교정 후 풀 트리거 재실행 → **oracle-reset 미달성 + 무크래시**
+  (T-미지지 = 패치 반응). episode JSON은 runner 로그에서 복원(원본은 ns 정리로 소실).
+- E-V 후 ns n2r-test 삭제 (위생 규칙).
