@@ -90,7 +90,8 @@ services:
     profiles: [cve123633]
     ports: ["8447:443"]
     volumes:
-      - ./conf/proxy.conf:/usr/local/nginx/conf/nginx.conf:ro
+      # drain 경합 압축 변형: worker_connections 16 + debug 로그 (run_123633.sh)
+      - ./conf/proxy-small.conf:/usr/local/nginx/conf/nginx.conf:ro
       - cores:/cores
     depends_on: [slowback]
 

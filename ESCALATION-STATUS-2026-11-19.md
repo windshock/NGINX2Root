@@ -189,3 +189,47 @@ PING ACK 수신) 모두 관측. 디버그 로그로 `http2 close stream 155` 이
 - 타깃 pod eth0: **수신 119.9GB vs 송신 0.43GB (비대칭 ≈277:1)**, RX 패킷 1,230만.
 - access.log는 이 트래픽을 소수 요청 라인으로만 기록(제어 프레임 무로그 실측 확인) →
   DEFENDER-GUIDE §3-B를 실측 근거로 갱신 (파일 계측 필요성 포함).
+
+## 11. 11/20 7차 갱신 — UAF 트리거 개발: 경로 활성 확인, 크래시 미지지
+
+### trigger_123633 (drain UAF) — 10 episode
+
+| 축 | 결과 |
+|---|---|
+| **drain 경로 활성** | **10/10** — `reusing connection` 이벤트, WARN `worker_connections are not enough` 2/10. 트리거 토폴로지(부분 HEADERS 커넥션 + 패딩 + 동시 신규 접속)가 drain을 실제로 유발함을 실측 |
+| UAF 크래시 | **미지지** (0/10 SIGSEGV) |
+
+- 랩 변형: `ops/docker/conf/proxy-small.conf` (worker_connections 16, worker_processes 1,
+  debug 로그) — drain 임계(free ≤ connection_n/16)에 빠르게 도달시키는 설계.
+- 메커니즘 재확인(소스): handle_connection:670-674가 **불완전 프레임 대기 커넥션도
+  reusable=1 등록** + handler를 idle_handler로 교체(:692). drain(ngx_connection.c:1435+)은
+  c->close=1 후 read->handler 동기 호출. 1.31.9 수정(2df48a501)은 create_stream에서
+  reusable=0.
+- 미달 원인 분석: drain 콜백이 골라낸 커넥션의 커널 버퍼에 완성분이 "도착했으나 미처리"
+  상태여야 경합이 성립 — 외부 타이밍으로 그 정렬을 만들기 어려움 (ep01-10은 완성분이
+  별개 이벤트로 처리됨). 재설계 후보: accept-drain 직후 정렬(TCP 전송 타이밍 세밀 제어).
+
+### trigger_123634 (resolver UAF) — 재설계(가설 1회 허용) + 10 episode
+
+- **dnssim CNAME 지원 추가**: `<name>.c<D>.test` → CNAME → `x.d<D>.test`(지연 A) /
+  `<name>.c<D>nx.test` → CNAME → `x.d<D>.nx.test`(지연 NXDOMAIN). 실측: CNAME RR 인코딩 확인.
+- **경로 활성 실측**: alias 이름 질의 161회 → nginx가 CNAME을 따라 별칭 `x.d3.test` 재질의 →
+  161개 대기 ctx가 **CNAME 재시작 경로**(8492a8b8a 인접 코드)로 별칭 노드 대기목록에 흡수.
+- ALERT `could not cancel` / 크래시: **0/10 — 미지지**.
+- **ALERT 미발화 원인 확정(소스 실측)**: `ngx_resolve_name_done()`의 ALERT 조건은
+  `ctx->state == NGX_AGAIN 또는 TIMEDOUT` AND ctx가 rn->waiting에 없음. 정상 보고 루프는
+  handler 호출 **전에** ctx->state를 갱신하므로, "자기 ctx"의 done()은 ALERT 없이 통과.
+  UAF는 **보고 루프 전체 탈착 직후, 미래 ctx(state 갱신 전)를 다른 핸들러가 done()할 때**만
+  성립 → 동기 취소 벡터가 필요.
+- **재설계 방향 확정 (다음 세션)**: **SRV 경로** — done()의 `ctx->nsrvs` 재귀가 자식 ctx들을
+  동기 취소(ngx_resolver.c:539-541) = "다른(미래) ctx를 done()"의 실현 가능한 벡터.
+  랩 구성: `upstream { server <이름> service=http resolve; }` (1.31.8 지원 실측 —
+  ngx_http_upstream.c:6682) + dnssim에 SRV 응답 지원 추가 + 지연 자식 + 중단 겹침.
+
+### 자산
+
+| 파일 | 역할 |
+|---|---|
+| `exploit/trigger/trigger_123633.py` + `ops/run_123633.sh` + `conf/proxy-small.conf` | drain UAF 트리거 체계 |
+| `exploit/trigger/trigger_123634.py` (--mode direct/cname/cname-nx) + dnssim CNAME | resolver UAF 트리거 체계 |
+| `exploit/results/CVE-2026-123633/a1/ep01-10/` · `CVE-2026-123634/a1/ep01-10/` | episode + 서버 관측 기록 |
