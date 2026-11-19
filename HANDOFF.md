@@ -26,37 +26,35 @@ NGINX2Root(2026-11-18 NGINX 보안 릴리스) 5건 CVE에 대한 분석·e2e·�
 | EXTERNAL-REVIEW-2026-11-19.md | Rapid7 PoC 주장vs사실 (작성 중) |
 | DEFENDER-GUIDE.md | 방어자 가이드 (P5, 미작성) |
 
-## 현재 상태 (11/19 2차 세션 종료 시점)
+## 현재 상태 (11/20 3차 세션 종료 시점)
 
-- ✅ 1차 세션 전부 (기준선·분석·랩·E0a 오라클·DEFENDER-GUIDE v1)
-- ✅ E0b 에뮬 판정 확정: 정체 원인 = **백프레셔+TLS KeyUpdate 응답 경합** (SSL_read
-  WANT_WRITE → 읽기 정지), send_timeout 무관(ep08), 비결정적(ep03 통과/ep07-08 정체) →
-  **Mac 크래시 관측불가 → DFIRtx 이관 판정**
-- 🎯 **G2 게이트 통과**: DFIRtx worker-dev01(EPYC Genoa, avx512f/vl 실측) 네이티브에서
-  트리거 풀 실행 → **SIGSEGV 확정** (60.1GiB/154s, `worker exited on signal 11`)
-  — `exploit/results/CVE-2026-123007/a1-dfirtx/ep09-firtx-full/`
-- ✅ DFIRtx 인프라: `ops/dfirtx/{target,client}.yaml` + `ops/e0_dfirtx.sh` (up/smoke/
-  full/pull/down, 위생 규칙 ns 삭제 구현). nginx:1.31.8 공식 이미지 = trixie/OpenSSL
-  3.5.7 — **Rapid7 golden 프로파일 환경과 동일 계열** (e2e RCE에 유리)
-- ▶ P3: trigger_123634 ep01-04 미지지 (경로 도달 확인, 경합 미달) — dnssim 클래스 구조
-  버그 수정 완료(무응답 원인). CNAME/SRV 경로가 가설 재설계 후보
-- ✅ trigger_123633/121810/113425: 미개발 (랩 변형 conf·헬퍼는 구비)
+- ✅ 1-2차 세션 전부 (기준선·분석·랩·E0a 오라클·G2 SIGSEGV·DEFENDER-GUIDE v1)
+- 🎯 **핵심 목표 달성: 풀 RCE 10/10 재현 (R-확정)**
+  - 타깃 = Rapid7 검증 digest `nginx@sha256:5ab5b0b…` 고정, golden 프로파일 수정 없이 통과
+  - 119.02GiB/≈288s(278-301s), 캐너리 파일+uid:gid 101:101 이중 오라클, episode 10건
+  - `exploit/results/CVE-2026-123007/a1-dfirtx/ep{01..10}-rce/`
+- ✅ 특이성 확정 (DFIRtx 네이티브): A2(1.31.9) 오라클 단계 거부·무해 / A3(h2 off) ALPN 거부·무해
+  — A2 1차 시도는 랩 conf 오류로 무효(보존), 수정 후 유효 판정
+- ✅ 캐릭터라이징 1축: 오염 힙(정상 부하 60s 선오염+지속) → **실패** (`leak ambiguous: 0
+  candidates`, 302s, fail-closed 실측) — H3 예비 지지 (N=1)
+- ✅ 탐지 실측: RCE 진행 중 수신:송신 **277:1**(119.9GB vs 0.43GB) — DEFENDER-GUIDE §3-B 갱신,
+  access.log 제어프레임 무로그도 실측 확인
+- ▶ 미완: 캐릭터라이징 나머지 축(대역폭·동시성), 독자 개선(I-a/b/c), UAF 4건 트리거,
+  방어 스크립트 드라이런
 
 ## 다음 세션 시작 명령
 
-1. 이 파일 + `RESEARCH-PLAN-2026-11-19.md` §9 + `ESCALATION-STATUS-2026-11-19.md` §8 읽기
-2. G2가 통과했으므로 **e2e RCE 재현(P4)이 최우선**: DFIRtx `ops/e0_dfirtx.sh up` →
-   클라이언트 pod에 `pip install cryptography` + streamer 빌드(cc -O2 exploit 대상은
-   poc-external/exploit/streamer.c) → EXTERNAL-REVIEW §5.3 체크리스트 순서로 실행
-   (공식 이미지+glibc 2.41 프로파일 = 현재 타깃과 일치 — 프로파일 수정 최소화 기대)
-3. 캐릭터라이징(P4): 신선 컨테이너 N=10 episode 성공률 → 부하/대역폭/동시성 축
-4. UAF 4건: 123634 CNAME 경로 재설계 → 123633(worker_connections 소진 conf) 순
-5. 세션 종료 시 `ops/e0_dfirtx.sh down` (위생 규칙)
+1. 이 파일 + `RESEARCH-PLAN-2026-11-19.md` §9 + `ESCALATION-STATUS-2026-11-19.md` §9-10 읽기
+2. 우선순위 제안: (a) UAF 4건 트리거 — 123634 CNAME 경로 재설계(dnssim에 CNAME 응답 추가)
+   → 123633(작은 worker_connections conf 변형) → 121810(QUIC, trixie 빌드) → 113425(mail)
+   (b) 캐릭터라이징 대역폭 축(tc netem 또는 클라이언트측 제한) (c) 독자 개선 I-a 전송량 절감
+3. DFIRtx: `ops/e0_dfirtx.sh up` (재기동 ~2분, ns는 종료 시 삭제됨) → `prepare` → 실험
+4. 세션 종료 시 `ops/e0_dfirtx.sh down` + `ops/spec_dfirtx.sh down` (위생 규칙)
 
 ## 남은 과제
 
-1. **e2e_123007 RCE 재현 (DFIRtx)** — G2 통과, 게이트 열림. 캐너리 판정 R.
-2. A2/A3 특이성의 DFIRtx 네이티브 보강 (에뮬 특이성은 이미 확정)
-3. 캐릭터라이징·독자 개선 측정 (P4: I-a 전송량 절감, I-b 프로파일 일반화, I-c 안정화)
-4. trigger_123634 CNAME 경로 재설계 + trigger_123633/121810/113425 개발
-5. 방어 스크립트 랩 드라이런 + DEFENDER-GUIDE 탐지 임계값 실측 갱신 (P5)
+1. UAF 4건 트리거 (P3) — 123634 CNAME 재설계가 1순위 (경로 도달은 확인됨)
+2. 캐릭터라이징: 대역폭 축·동시성 축 (오염 힙 축은 1회 완료 — N 늘리면 더 강해짐)
+3. 독자 개선 I-a(전송량 절감)/I-b(프로파일 일반화)/I-c(안정화) — 기준선 288s·119GiB가 비교 기준선
+4. 방어 스크립트(inventory/monitor/mitigate/detect-rce) 랩 드라이런 + 가이드 임계값 보강
+5. (선택) A4 대조군 부하 하 탐지 룰 오탐률 측정 — DEFENDER-GUIDE §3-B 임계값 확정

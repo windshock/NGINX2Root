@@ -65,17 +65,17 @@ ops/                                       docker 4-arm 랩·계측·방어 스�
 | `EXTERNAL-REVIEW-2026-11-19.md` | ✅ | Rapid7 PoC 주장vs코드사실 (요구조건 H1-H16) |
 | `ops/docker/` 4-arm 랩 | ✅ | A1/A2/A3/A4 + CVE 노출 변형 (ALPN·버전 검증 완료) |
 | `exploit/trigger/trigger_123007.py` | ✅ | 트리거 포팅 — **E0a 오라클 확정 + 🎯 DFIRtx SIGSEGV 확정** (60.1GiB/154s) |
-| `exploit/e2e/e2e_123007.py` | ⏳ | 풀 RCE 체인 (G2 통과 — 다음 세션 개시) |
-| `DEFENDER-GUIDE.md` | ✅ v1 | 방어자 가이드 (실측 근거 표기 포함) |
+| `exploit/e2e/` (Rapid7 체인 러너 `ops/e2e_dfirtx.sh`) | 🎯 | **R-확정: 풀 RCE 10/10 재현** (119.02GiB/≈288s, 캐너리 101:101, digest 고정 타깃) |
+| `DEFENDER-GUIDE.md` | ✅ v1 | 방어자 가이드 — §3-A/3-B **랩 실측 근거 반영** (worker 계정 산출물, 277:1 비대칭) |
 | `ops/{inventory,monitor,mitigate,detect-rce}.sh` | ✅ | 방어 운영 스크립트 (랩 드라이런 P4 예정) |
-| `ops/dfirtx/ + e0_dfirtx.sh` | ✅ | DFIRtx 배포·러너 (G2 판정 환경) |
+| `ops/dfirtx/ + e0_dfirtx.sh + spec_dfirtx.sh` | ✅ | DFIRtx 배포·트리거·특이성 러너 (G2·H1 판정 환경) |
 | `exploit/trigger/trigger_123634.py` | ▶ | resolver UAF 트리거 — ep01-04 미지지 (경합 좁음, CNAME 재설계 예정) |
-| `ESCALATION-STATUS-2026-11-19.md` | ✅ | E0 실험 보고 (4차 갱신까지) |
+| `ESCALATION-STATUS-2026-11-19.md` | ✅ | 실험 보고 (6차 갱신까지) |
 
 ## 현재 상태
 
-2차 세션(2026-11-19): **G2 게이트 통과** — DFIRtx 네이티브(EPYC Genoa, avx512f/vl)에서
-CVE-2026-123007 트리거 풀 실행(60.1 GiB/154s)으로 **worker SIGSEGV 재현 확정**. 에뮬 환경은
-근본 원인 오라클(확정)까지만 가능함을 판정(백프레셔+KeyUpdate 응답 경합 실측). 다음:
-e2e RCE 재현(P4 개시), UAF 4건 트리거(P3), 방어 가이드 임계값 실측.
+3차 세션(2026-11-19/20): **핵심 목표 달성 — 풀 RCE 10/10 재현(R-확정)** + 특이성 확정
+(A1 크래시·RCE / A2 오라클 실패·무해 / A3 ALPN 거부·무해) + 오염 힙 축 실패 실측(H3 예비 지지)
++ 탐지 수치 실측(수신:송신 277:1). 남은 것: UAF 4건 트리거(P3), 캐릭터라이징 나머지 축
+(대역폭·동시성), 독자 개선(I-a/b/c), 방어 스크립트 드라이런.
 진행 상황은 `HANDOFF.md`와 `ESCALATION-STATUS-*.md` 참조.

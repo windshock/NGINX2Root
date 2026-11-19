@@ -1,0 +1,102 @@
+# NGINX2Root DFIRtx 특이성 검증 arm — A2(패치 1.31.9) / A3(완화 h2off)
+# 목적: 같은 트리거 입력이 패치/완화 arm에서 무해함을 네이티브에서 실측 (RESEARCH-PLAN H1)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n2r-a3-conf
+  namespace: n2r-test
+data:
+  nginx.conf: |
+    worker_processes 4;
+    error_log /var/log/nginx/error.log notice;
+    pid /var/run/nginx.pid;
+    events { worker_connections 1024; }
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      sendfile on;
+      keepalive_timeout 65;
+      server {
+        listen 443 ssl;
+        # http2 off (완화 arm — A3)
+        ssl_certificate     /etc/nginx/certs/server.crt;
+        ssl_certificate_key /etc/nginx/certs/server.key;
+        root /usr/share/nginx/html;
+        location / { index index.html; }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n2r-a2-patched
+  namespace: n2r-test
+  labels: { app: n2r-a2 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: n2r-a2 } }
+  template:
+    metadata: { labels: { app: n2r-a2 } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: dfirtx-worker-dev01 }
+      initContainers:
+        - name: gencert
+          image: nginx:1.31.8
+          command: ["sh", "-c"]
+          args:
+            - openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+              -keyout /certs/server.key -out /certs/server.crt
+              -subj "/CN=n2r-a2"
+          volumeMounts: [{ name: certs, mountPath: /certs }]
+      containers:
+        - name: nginx
+          image: nginx:1.31.9
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - '{ printf "<h1>nginx2root-lab</h1>"; head -c 896 /dev/zero | tr "\0" "x"; } | head -c 896 > /usr/share/nginx/html/index.html && exec nginx -g "daemon off;"'
+          ports: [{ containerPort: 443 }]
+          resources:
+            requests: { cpu: "500m", memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf }
+            - { name: certs, mountPath: /etc/nginx/certs }
+      volumes:
+        - name: conf
+          configMap: { name: n2r-nginx-conf }
+        - name: certs
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n2r-a3-mitigated
+  namespace: n2r-test
+  labels: { app: n2r-a3 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: n2r-a3 } }
+  template:
+    metadata: { labels: { app: n2r-a3 } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: dfirtx-worker-dev01 }
+      containers:
+        - name: nginx
+          image: nginx:1.31.8
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - 'openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /etc/nginx/certs/server.key -out /etc/nginx/certs/server.crt -subj "/CN=n2r-a3" && cp /mnt/conf/nginx.conf /etc/nginx/nginx.conf && { printf "<h1>nginx2root-lab</h1>"; head -c 896 /dev/zero | tr "\0" "x"; } | head -c 896 > /usr/share/nginx/html/index.html && exec nginx -g "daemon off;"'
+          ports: [{ containerPort: 443 }]
+          resources:
+            requests: { cpu: "500m", memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: certs, mountPath: /etc/nginx/certs }
+            - { name: conf, mountPath: /mnt/conf }
+      volumes:
+        - name: certs
+          emptyDir: {}
+        - name: conf
+          configMap: { name: n2r-a3-conf }
