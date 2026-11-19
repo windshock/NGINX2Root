@@ -1,0 +1,48 @@
+# I-b 실험: glibc IFUNC memcpy 선택을 AVX2 경로로 강제한 변형 타깃
+# GLIBC_TUNABLES hwcaps 마스킹으로 동일 CPU(EPYC Genoa)에서 AVX2 변형 선택을 유도
+# → "CPU 플래그가 익스플로잇에 얼마나 실제로 개입하는가"를 실측 (RESEARCH-PLAN §5-3 I-b)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n2r-avx2
+  namespace: n2r-test
+  labels: { app: n2r-avx2 }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: n2r-avx2 } }
+  template:
+    metadata: { labels: { app: n2r-avx2 } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: dfirtx-worker-dev01 }
+      initContainers:
+        - name: gencert
+          image: nginx:1.31.8
+          command: ["sh", "-c"]
+          args:
+            - openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+              -keyout /certs/server.key -out /certs/server.crt
+              -subj "/CN=n2r-avx2"
+          volumeMounts: [{ name: certs, mountPath: /certs }]
+      containers:
+        - name: nginx
+          image: nginx@sha256:5ab5b0b01097420873a3f3330f44248e34a3c2a3e8d5ee30658aeae8cb7435da
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - '{ printf "<h1>nginx2root-lab</h1>"; head -c 896 /dev/zero | tr "\0" "x"; } | head -c 896 > /usr/share/nginx/html/index.html && exec nginx -g "daemon off;"'
+          env:
+            - name: GLIBC_TUNABLES
+              # AVX-512 계열 선택 조건 마스킹 → memcpy IFUNC가 AVX2 변형으로 내려감
+              value: "glibc.cpu.hwcaps=-AVX512F,-AVX512VL,-AVX512DQ,-AVX512BW"
+          ports: [{ containerPort: 443 }]
+          resources:
+            requests: { cpu: "500m", memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf }
+            - { name: certs, mountPath: /etc/nginx/certs }
+      volumes:
+        - name: conf
+          configMap: { name: n2r-nginx-conf }
+        - name: certs
+          emptyDir: {}

@@ -276,3 +276,51 @@ error.log:  exited on signal 6 (RCE 후 지연 붕괴) vs signal 11 (시도 — 
 - A2(패치 arm) 특이성: conf 교정 후 풀 트리거 재실행 → **oracle-reset 미달성 + 무크래시**
   (T-미지지 = 패치 반응). episode JSON은 runner 로그에서 복원(원본은 ns 정리로 소실).
 - E-V 후 ns n2r-test 삭제 (위생 규칙).
+
+## 13. 11/20 9차 갱신 — I-b 실측: **AVX2 강제에서도 크래시·풀 RCE 재현 (CPU 의존성 정정)**
+
+> 사용자 질문 "AVX-512 VBMI/F/VL과 AVX2는 원리가 같다 — AVX2에서도 되는 것 아닌가?"에 대한
+> 실험적 답변. RESEARCH-PLAN §5-3 I-b(avx512 비의존 경로, [미확인])를 실측으로 판정.
+> (8차 갱신 E-V 세션과 병렬 — 본 실험은 같은 ns에서 진행, 결과는 위생 삭제 전 회수 완료)
+
+### 방법
+
+- 동일 CPU(EPYC Genoa)에서 **glibc IFUNC 선택만 마스킹**: 타깃 pod에
+  `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX512F,-AVX512VL,-AVX512DQ,-AVX512BW`
+  (`ops/dfirtx/avx2-target.yaml`, 동일 digest 이미지).
+- **귀속 검증 (실측)**: `AVX512F`/`AVX512VL` 문자열이 **ld-linux-x86-64.so.2에 존재**
+  (각 1회) — x86 hwcaps 튜너블 이름 일치는 ld.so에서 처리됨을 확인. env 도달 확인
+  (--list-diagnostics env[0x3]). 한계: 마스킹이 적용되는 `usable` 배열은
+  --list-diagnostics에 미출력 → **실행 중 변형을 직접 관측하지는 못함**. 단, 아래
+  코드 실측으로 귀속과 무관하게 결론이 성립함.
+- 대조군: 마스킹 없는 동일 세션 e2e (ep11-avx2-control → R-확정, 323.54s).
+
+### 결과
+
+| 실험 | 조건 | 결과 | 판정 |
+|---|---|---|---|
+| E-avx2-1 트리거 풀 | AVX2 강제 | **SIGSEGV** (`worker process 139 exited on signal 11`, ~55GiB) | **T-확정** |
+| **E-avx2-2 e2e** | **AVX2 강제** | **R-확정** — 286.00s/119.02GiB/보조 16, 캐너리 101:101, **프로파일 수정 없음** | **R-확정** |
+| 제어군 e2e | 마스킹 없음 | R-확정 (323.54s) | R-확정 |
+
+### 결론 — 사용자 가설 **지지됨**, CPU 의존성 인식 **정정**
+
+1. **크래시 트리거는 memcpy 변형 무관** — PoC 주석("비정규 엔드포인트 → 치명적 경로")이
+   실측으로 지지. AVX2 전용 서버에서도 DoS/크래시 경로 유효.
+2. **풀 RCE도 AVX2 강제에서 재현** — golden 프로파일의 `required_cpu_flags`(avx512f/vl)는
+   **기능적 의존이 아니라 캘리브레이션 서술**이었음. **코드 실측 근거**: `memcpy_runtime_offset`·
+   `memcpy_variant`·`memcpy_vector_bytes`는 profiles.py:277-279의 형식 검증에만 쓰이고
+   memory/reclaim/runner/cli 어디서도 **계산 분기에 사용되지 않음**(grep 0건). 누출 판정의
+   핵심(arena 포인터 범위 등)은 libc 빌드 상수라 변형 무관.
+3. **방어 관점 함의**: avx512f/vl이 없는 **일반 AVX2 서버가 동등하게 위험** — "우리 CPU는
+   AVX-512 없으니 안전"은 오안. E-avx2-2 성공이 그 오안의 직접 반증.
+
+### 한계 (정직)
+
+- AVX2 e2e N=1(+재현성 루프 ep02-03 진행), 트리거 N=1. 실패 사례가 나오면 "항상 성공"이
+  아니라 "성공률 측정 필요"로 정정할 것.
+- 실행 중 memcpy 변형을 직접 관측하지 못함(LD_DEBUG=ifunc 미지원, usable 배열 미출력).
+  다만 코드 실측상 변형과 무관하게 성립하므로 결론에 영향 없음 — "마스킹 여부"와
+  "CPU 의존성"을 분리한 판정.
+- 소스빌드 랩(glibc 2.36 bookworm)과 공식 이미지(2.41 trixie)의 변형 차이는 미검증.
+- episode: `exploit/results/CVE-2026-123007/a1-dfirtx-avx2/{ep01-avx2-full,ep01-avx2-rce,ep11-avx2-control}.json`
