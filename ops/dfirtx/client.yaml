@@ -1,0 +1,19 @@
+# NGINX2Root DFIRtx 트리거 클라이언트 — CPython 3.10 + OpenSSL 3 (linux/amd64)
+# exploit/ 코드는 ops/e0_dfirtx.sh가 kubectl cp로 주입. 896B 본문 지문 전제 유지.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: n2r-client
+  namespace: n2r-test
+  labels: { app: n2r-client }
+spec:
+  nodeSelector: { kubernetes.io/hostname: dfirtx-worker-dev01 }  # 타깃과 동일 노드 (고대역폭)
+  restartPolicy: Never
+  containers:
+    - name: client
+      image: python:3.10-slim
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: "500m", memory: 256Mi }
+        limits: { cpu: "2", memory: 2Gi }

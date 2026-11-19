@@ -64,15 +64,18 @@ ops/                                       docker 4-arm 랩·계측·방어 스�
 | `deep-analysis-CVE-{123633,123634,121810,113425}.md` | ✅ | UAF 4건 수정 커밋·조건 분석 |
 | `EXTERNAL-REVIEW-2026-11-19.md` | ✅ | Rapid7 PoC 주장vs코드사실 (요구조건 H1-H16) |
 | `ops/docker/` 4-arm 랩 | ✅ | A1/A2/A3/A4 + CVE 노출 변형 (ALPN·버전 검증 완료) |
-| `exploit/trigger/trigger_123007.py` | ✅ | 트리거 포팅 — **E0a: 근본원인 오라클 재현(확정)**, 특이성 A2/A3 실측 |
-| `exploit/e2e/e2e_123007.py` | ⏳ | 풀 RCE 체인 (DFIRtx 실행 — 2차 세션) |
+| `exploit/trigger/trigger_123007.py` | ✅ | 트리거 포팅 — **E0a 오라클 확정 + 🎯 DFIRtx SIGSEGV 확정** (60.1GiB/154s) |
+| `exploit/e2e/e2e_123007.py` | ⏳ | 풀 RCE 체인 (G2 통과 — 다음 세션 개시) |
 | `DEFENDER-GUIDE.md` | ✅ v1 | 방어자 가이드 (실측 근거 표기 포함) |
 | `ops/{inventory,monitor,mitigate,detect-rce}.sh` | ✅ | 방어 운영 스크립트 (랩 드라이런 P4 예정) |
-| `ESCALATION-STATUS-2026-11-19.md` | ✅ | E0 실험 보고 (n차 갱신 진행) |
+| `ops/dfirtx/ + e0_dfirtx.sh` | ✅ | DFIRtx 배포·러너 (G2 판정 환경) |
+| `exploit/trigger/trigger_123634.py` | ▶ | resolver UAF 트리거 — ep01-04 미지지 (경합 좁음, CNAME 재설계 예정) |
+| `ESCALATION-STATUS-2026-11-19.md` | ✅ | E0 실험 보고 (4차 갱신까지) |
 
 ## 현재 상태
 
-1차 세션(2026-11-19): **Phase 0-2 완료 + E0a 핵심 결과 확보** — CVE-2026-123007의 근본 원인
-(클린업 오버크레딧)이 Mac 에뮬(AVX-512 없음)에서 재현됐고, 패치(A2)·완화(A3) arm에서 재현되지
-않음을 실측. E0b(풀 크래시 ≈60GiB) 진행 중. 다음: DFIRtx 풀 RCE(G2), UAF 4건 트리거(P3).
+2차 세션(2026-11-19): **G2 게이트 통과** — DFIRtx 네이티브(EPYC Genoa, avx512f/vl)에서
+CVE-2026-123007 트리거 풀 실행(60.1 GiB/154s)으로 **worker SIGSEGV 재현 확정**. 에뮬 환경은
+근본 원인 오라클(확정)까지만 가능함을 판정(백프레셔+KeyUpdate 응답 경합 실측). 다음:
+e2e RCE 재현(P4 개시), UAF 4건 트리거(P3), 방어 가이드 임계값 실측.
 진행 상황은 `HANDOFF.md`와 `ESCALATION-STATUS-*.md` 참조.

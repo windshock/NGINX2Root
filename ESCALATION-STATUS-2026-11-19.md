@@ -78,3 +78,50 @@ PING ACK 수신) 모두 관측. 디버그 로그로 `http2 close stream 155` 이
   - 패치/완화 특이성: **확정** (A2 오라클 미달성, A3 h2 거부)
   - Mac 에뮬에서 크래시(E0b): **관측불가 상태로 진행 중** — a1 정지 원인 규명 또는
     DFIRtx 이관 필요 (RESEARCH-PLAN §1-2 계측 비판 #3 그대로 적용)
+
+## 8. 11/19 4차 갱신 — E0b 에뮬 판정 확정 + 🎯 G2 게이트 통과 (DFIRtx SIGSEGV)
+
+### 에뮬 정체 원인 (관측 확정 — ep07 디버그 로그)
+
+```
+23:16:44 SSL_read: -1 → SSL_get_error: want write   ← 핵심
+23:16:44 client timed out (110) → 408 → close stream 153/155 (queued 1)
+23:16:44 worker cycle / epoll timer: -1             ← 이후 완전 idle
+```
+
+- **메커니즘**: 클라이언트 백프레셔(RCVBUF 1024, sendall 중 미판독) 상태에서 nginx의
+  TLS 출력(KeyUpdate 응답)이 TCP 윈도 0으로 막히면 **SSL_read가 WANT_WRITE로 블록** →
+  nginx 읽기 정지 → 클라이언트 sendall 교착. send_timeout 60s가 캐리어/릴리즈 응답을
+  408 조기 종료시키는 부수 현상도 관측.
+- **send_timeout 무관 재확인**: ep08(600s 변형)도 동일 정체 (Recv-Q 355KB 고정).
+- **비결정성**: ep03(스모크)은 동일 조건에서 want-write 없이 전체 플라이트(21.7MB) 통과.
+  → 에뮬 처리 속도+커널 버퍼 상태에 따라 회차별로 갈리는 경합. 원본 PoC 환경(네이티브
+  amd64)은 재현문서가 정상 작동 입증 — **에뮬 한계로 판정**: Mac 크래시(E0b) = 관측불가,
+  DFIRtx 이관 (계획대로).
+
+### 🎯 G2 게이트 통과 — DFIRtx 네이티브 크래시 재현 (ep09, T-확정)
+
+| 항목 | 값 (실측) |
+|---|---|
+| 환경 | DFIRtx worker-dev01 pod, EPYC Genoa (**avx512f+avx512vl 실측**), nginx:1.31.8 공식 이미지(trixie, OpenSSL 3.5.7), linux/amd64 네이티브 |
+| 트리거 | trigger_123007.py 풀 모드 — 128 트랜슈, **60.1 GiB**, 154.31초 |
+| 오라클 | cleanup over-credit confirmed (스모크 ep09도 통과) |
+| **크래시** | **`worker process 32 exited on signal 11`** (SIGSEGV, 클라이언트 연결 사망 + 서버 로그 이중 확인) |
+| episode | `exploit/results/CVE-2026-123007/a1-dfirtx/ep09-firtx-{smoke,full}/` + crash_log.txt |
+| 대조 | 이번 세션 A2/A3 특이성(에뮬)과 DFIRtx A2/A3 특이성은 다음 세션 보강 예정 |
+
+- Rapid7 재현문서 기준(≈60GiB, 189s)과 실측 규모·시간 일치 — **공개 PoC의 크래시 주장 재현 =
+  지지됨에서 확정으로 승격** (우리 랩에서의 실측).
+- 배포 매니페스트·러너: `ops/dfirtx/{target,client}.yaml`, `ops/e0_dfirtx.sh` (지문 확인
+  ALPN h2 + 896B + 4 worker). 위생 규칙 준수 — ns n2r-test 종료 시 삭제 완료(재기동 ~2분).
+- **다음 단계(G2 통과에 따라 개시 가능)**: e2e RCE 재현 — 클라이언트 pod에 cryptography
+  의존성 + streamer 빌드 필요 (EXTERNAL-REVIEW §5.3 체크리스트).
+
+### dnssim 수정 (실측)
+
+- ep01에서 resolver가 재전송만 반복 — 원인: dnssim 헬퍼의 **서버/핸들러 클래스 구조 오류**
+  (RequestHandlerClass=None → handle 미호출, 무응답). 수정 후 3.0s 지연 응답 실측 확인.
+- trigger_123634 ep01-04: **미지지** (경로 도달은 확인 — 리졸브 완료·upstream 502·mirror
+  704 이벤트, 그러나 ALERT/crash 없음). 경합이 외부 타이밍만으로는 좁음.
+  가설 재설계 후보(RESEARCH-PLAN §4의 1회 허용분): **CNAME 응답 경로**(8492a8b8a 인접 코드)
+  + SRV — dnssim에 CNAME 지원 추가 필요. 다음 세션 과제.

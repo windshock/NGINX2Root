@@ -1,0 +1,79 @@
+# NGINX2Root DFIRtx 트리거 타깃 — nginx 1.31.8 공식 이미지 (linux/amd64)
+# G2 게이트용: 크래시 트리거 검증 (트리거만으로 RCE 불요 — streamer/의존성 불필요)
+# 위생: 전용 ns(n2r-test), 리소스 제한, 실험 종료 시 ns 삭제 (GOAL §1-4)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: n2r-test
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n2r-nginx-conf
+  namespace: n2r-test
+data:
+  nginx.conf: |
+    worker_processes 4;
+    error_log /var/log/nginx/error.log notice;
+    pid /var/run/nginx.pid;
+    events { worker_connections 1024; }
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      sendfile on;
+      keepalive_timeout 65;
+      server {
+        listen 443 ssl;
+        http2 on;
+        ssl_certificate     /etc/nginx/certs/server.crt;
+        ssl_certificate_key /etc/nginx/certs/server.key;
+        root /usr/share/nginx/html;
+        location / { index index.html; }
+      }
+    }
+  index.html: |
+    <h1>nginx2root-lab</h1>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n2r-target
+  namespace: n2r-test
+  labels: { app: n2r-target }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: n2r-target } }
+  template:
+    metadata: { labels: { app: n2r-target } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: dfirtx-worker-dev01 }
+      initContainers:
+        - name: gencert
+          image: nginx:1.31.8      # busybox엔 openssl CLI 없음 (실측) — nginx 이미지의 openssl 사용
+          command: ["sh", "-c"]
+          args:
+            - openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+              -keyout /certs/server.key -out /certs/server.crt
+              -subj "/CN=n2r-target"
+          volumeMounts: [{ name: certs, mountPath: /certs }]
+      containers:
+        - name: nginx
+          image: nginx:1.31.8
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            # ConfigMap 마운트는 896B 보장이 어려워 시작 시 정확히 896B 재생성
+            # (Rapid7 프로파일 전제: 74 요청 = 65,535 소진 방정식)
+            - '{ printf "<h1>nginx2root-lab</h1>"; head -c 896 /dev/zero | tr "\0" "x"; } | head -c 896 > /usr/share/nginx/html/index.html && wc -c /usr/share/nginx/html/index.html && exec nginx -g "daemon off;"'
+          ports: [{ containerPort: 443 }]
+          resources:
+            requests: { cpu: "500m", memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf }
+            - { name: certs, mountPath: /etc/nginx/certs }
+      volumes:
+        - name: conf
+          configMap: { name: n2r-nginx-conf }
+        - name: certs
+          emptyDir: {}

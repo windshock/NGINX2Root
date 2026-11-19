@@ -7,11 +7,11 @@
     (예: host.d5.test → 5초) 그 외 도메인은 즉시 127.0.0.1 응답
   - NXDOMAIN 유도: <name>.nx.test → 지연 후 NXDOMAIN
 의존성 없음 (struct로 최소 DNS 인코딩/디코딩).
+수정 이력: 2026-11-19 — 서버/핸들러 클래스 구조 오류로 무응답이던 버그 수정 (ep01 실측).
 """
 import socket
 import socketserver
 import struct
-import threading
 import time
 
 
@@ -53,19 +53,14 @@ def build_response(tid, name, rcode=0, ip="127.0.0.1"):
     q = encode_name(name) + struct.pack("!HH", 1, 1)  # A IN
     body = b""
     if rcode == 0:
-        rr = encode_name(name) + struct.pack("!HHIH", 1, 1, 5, 4) \
-             + socket.inet_aton(ip)
-        body += rr
-        # 추가 SRV/미해당으로 응답 최소 유지
+        body += encode_name(name) + struct.pack("!HHIH", 1, 1, 5, 4) \
+            + socket.inet_aton(ip)
     return hdr + q + body
 
 
-class Handler(socketserver.ThreadingMixIn, socketserver.UDPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-
+class DnsHandler(socketserver.BaseRequestHandler):
     def handle(self):
-        data, addr = self.request[0], self.request[1]
+        data, sock = self.request[0], self.request[1]
         tid, name, qtype, qclass = parse_query(data)
         if not name:
             return
@@ -84,10 +79,15 @@ class Handler(socketserver.ThreadingMixIn, socketserver.UDPServer):
         if delay:
             time.sleep(delay)
         resp = build_response(tid, name, rcode=rcode)
-        self.socket.sendto(resp, addr)
+        sock.sendto(resp, self.client_address)
+
+
+class DnsServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 if __name__ == "__main__":
-    srv = Handler(("0.0.0.0", 53), None)
+    srv = DnsServer(("0.0.0.0", 53), DnsHandler)
     print("[dnssim] listening :53/udp (delay via .dN. suffix, nx via .nx.test)", flush=True)
     srv.serve_forever()
