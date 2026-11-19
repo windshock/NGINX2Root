@@ -1,6 +1,9 @@
 # NGINX2Root 방어자 가이드 — 내 서버 판단부터 조치 완료까지
 
-2026-11-19 갱신 · v3 · 대상: NGINX 운영자, 인프라·보안관제·침해대응 담당자
+2026-11-20 갱신 · v4 · 대상: NGINX 운영자, 인프라·보안관제·침해대응 담당자
+· v4 변경: 성공 재현 episode(ep12-verif)의 컨테이너 로그 전량 수집으로 탐지 흔적을
+실측 확인하고 §5-1·5-2·5-4를 교정했다. 이전 버전의 추론형 시그니처
+(request_length=16777xxx)는 실측값(50331645)과 달랐다.
 
 ## 1. 먼저 결정할 것
 
@@ -234,8 +237,9 @@ QUIC 차단은 `http3 off`나 TCP 검사만으로 완료 처리하지 않고 UDP
 | 신호 | 바로 확인할 것 | 단독으로 확정할 수 없는 것 |
 |---|---|---|
 | worker 아래에서 예상 밖의 셸·프로그램 실행 | 실행 이벤트의 시각·파일·인자·부모/조상 PID·계정·컨테이너, 정상 모듈 동작 여부 | 특정 CVE 악용·호스트 root 획득 |
-| `worker process ... exited on signal 11` | 같은 시각의 연결·프로토콜 이상, 코어, 배포/reload 이력 | 크래시만으로 코드 실행 |
-| 긴 h2 연결에서 수신량은 크고 요청 로그의 크기는 작음 | 연결별 수신/송신량 변화, 정상 업로드·gRPC 여부, worker 이상과의 시간 일치 | 비대칭 수치만으로 공격 |
+| worker의 error.log에 `signal 17 (SIGCHLD) received from N` | 정상 NGINX worker는 자식을 포크하지 않는다. 이 라인은 worker가 자식 프로세스를 만들어 회수했다는 흔적이며 EDR 없이도 확인 가능 [실측·§5-4] | SIGCHLD만으로는 실행된 명령의 내용·목적을 알 수 없음 |
+| `worker process ... exited on signal 11`(SIGSEGV) 또는 `signal 6`(SIGABRT) | 같은 시각의 연결·프로토콜 이상, 코어, 배포/reload 이력. 랩 실측에서 두 사망 방식은 달랐다: 11은 크래시 시도(실행 전 접근 위반), 6은 실행 후 지연 붕괴 [실측·§5-4] | 크래시만으로 코드 실행 확정 불가. 시그널 종류만으로 악용 성공 단정 불가 |
+| 긴 h2 연결에서 수신량은 크고 요청 로그의 줄 수는 적음 | 연결별 수신/송신량 변화, 정상 업로드·gRPC 여부, worker 이상과의 시간 일치. 줄 수가 적어도 캐리어 요청의 `request_length`는 거대할 수 있다(§5-2·5-4) | 비대칭 수치만으로 공격 |
 | 새 파일·비정상 내부 연결·예상 밖의 외부 송신 | 파일 변경·프로세스·DNS/flow 로그를 같은 타임라인으로 연결 | worker 권한을 넘어선 권한 상승 |
 
 실행 감시는 EDR·호스트 감사 로그 등 지속 수집을 우선한다. `ps`를 주기적으로 보는 방식은
@@ -258,6 +262,11 @@ worker UID로 바꾼다. 지원하는 시스템에서 규칙 로드와 실제 �
 `request_length`는 요청의 길이이며 HTTP/2 연결의 모든 제어 프레임을 세는 값이 아니다.
 로그는 요청 처리 종료 시 남으므로 진행 중이거나 비정상 종료된 요청도 고려해야 한다.
 **“요청 로그가 작으니 공격 트래픽도 작다”는 판단은 성립하지 않는다.** [로그 정의][DOC-LOG]
+
+단, 요청에 붙는 초대형 HEADERS·CONTINUATION은 `request_length`에 합산되어 보인다.
+자체 랩 재현에서는 캐리어 요청 320건이 각각 `request_length=50331645`
+(max frame size 16,777,215의 3배)로 기록됐다. 즉 줄 수는 적어도 **눈에 띄는 거대 값이
+섞여 나오며, 이 값 자체가 유용한 흔적**이다. [실측·단일 PoC 프로파일·§5-4]
 
 Linux의 연결 확인 예시:
 
@@ -318,6 +327,61 @@ stdout 수집 경로를 확인한다. `kubectl logs`가 비어 있어도 파일�
 `request_length` 값 하나·glibc 메시지 하나를 단독 경보로 쓰기보다, 위 흔적과 §5-1의
 실행 감시·§5-2의 연결 수신량을 같은 타임라인으로 연결해 판정한다. glibc 메시지는
 **힙 손상이 발생했다는 증거일 뿐** 악용 성공 여부와는 별개 판정이다.
+
+### 5-5. 실행 가능한 조사 명령 (교정·실측 샘플 포함)
+
+아래 명령은 ①②이 §5-2의 `nginx_hunt` 같은 사용자 정의 포맷( `$request_length`·
+`$connection_requests` 수집)을 전제한다. 기본 combined 포맷에서는 ①②가 동작하지 않는다.
+“▌실측 샘플”은 자체 랩 성공 재현(ep12-verif)에서 실제로 기록된 라인이다.
+
+```bash
+# ── NGINX2Root 침해 증거 조사 (CVE-2026-123007) ──
+
+# ① 캐리어 흔적 — 초대형 HEAD 요청 다발
+#    캐리어 1건 = HEADERS 16MB + CONTINUATION 2×16MB → $request_length에 합산되어
+#    정확히 50331645 (3×16,777,215)로 기록됨. 실측: 한 출발지에서 320줄/수 분.
+grep -E 'request_length=50331645' /var/log/nginx/hunt.log | head
+# ▌실측 샘플:
+# 2026-11-19T22:41:54+00:00 src=10.233.65.161 conn=1 requests=80 proto=HTTP/2.0 status=200 request_length=50331645 bytes_sent=116 request_time=0.120
+
+# ② 한 커넥션에서 수백 요청 — 실측 최대 requests=519 (74 초기 + 320 캐리어 + 96 오너 + …)
+awk '/requests=([3-9][0-9]{2}|[0-9]{4,})/' /var/log/nginx/hunt.log
+# ▌실측 샘플:
+# 2026-11-19T22:46:37+00:00 src=10.233.65.161 conn=1 requests=519 proto=HTTP/2.0 status=206 request_length=52 bytes_sent=149 request_time=1.503
+
+# ③ worker 사망 시그널 — 사망 방식으로 시도/성공 구분 가능 [실측]
+#    signal 11 = 크래시 시도 (실행 전 OOB) / signal 6 = 실행 후 힙 붕괴 (지연 사망)
+grep -E 'exited on signal (6|11)' /var/log/nginx/error.log
+ls -la /cores /var/lib/systemd/coredump 2>/dev/null
+# ▌실측 샘플 (signal 11 = 트리거 시도):
+# 2026/11/19 00:01:33 [alert] 1#1: worker process 32 exited on signal 11
+# ▌실측 샘플 (signal 6 = RCE 성공):
+# 2026/11/19 22:46:45 [alert] 1#1: worker process 12 exited on signal 6
+
+# ④ worker 자식 포크 흔적 — 정상 nginx worker는 절대 자식을 만들지 않음 [실측]
+grep 'SIGCHLD' /var/log/nginx/error.log
+# ▌실측 샘플:
+# 2026/11/19 22:46:43 [notice] 12#12: signal 17 (SIGCHLD) received from 23
+
+# ⑤ glibc 힙 손상 메시지 — nginx error.log가 아니라 "프로세스 stderr"로 나감 [실측]
+#    컨테이너: docker logs / kubectl logs, systemd: journalctl -u nginx
+docker logs nginx 2>&1 | grep -E 'double free|malloc\(\)|free\(\)|corrupt'
+# ▌실측 샘플:
+# double free or corruption (!prev)
+
+# ⑥ worker 계정 소유의 의심 파일 — 성공 RCE의 잔상 (uid는 배포별 확인: 공식 이미지 101)
+find /tmp /var/tmp -user 101 -mmin -1440 2>/dev/null
+# ▌실측 샘플 (랩 캐너리):
+# /tmp/n2r-canary-01  uid:gid = 101:101
+
+# ⑦ EDR/auditd — worker execve (가장 강력한 증거. 키는 §5-1의 audit 규칙과 일치)
+ausearch -k nginx_exec -i 2>/dev/null | tail
+```
+
+값·줄 수는 공개 PoC 프로파일 실측치다. 캐리어 수·요청 수는 변종에 따라 달라질 수
+있으므로 **정확한 값 일치보다 “초대형 request_length 다발 + 단일 커넥션 다중 요청 +
+worker SIGCHLD·시그널”의 조합**을 찾는다. ①②는 시도 흔적, ③~⑥은 시도와 성공을
+가르는 흔적이다. ⑦은 EDR 환경 전제로 자체 랩에서는 검증하지 않았다.
 
 크래시는 OOMKilled/SIGKILL, 계획된 worker 교체, 다른 모듈 오류와 구별한다. **크래시와
 의심스러운 연결이 겹치면 공격 시도 가설은 지지됨**으로 조사하되 코드 실행은 별도 증거로
@@ -386,7 +450,10 @@ stdout 수집 경로를 확인한다. `kubectl logs`가 비어 있어도 파일�
 - **확인된 사실 — 공개 자료·소스**: 공식 릴리스와 보안 목록의 버전·조건, 공개된 123007
   공격 코드, NGINX 1.31.8/1.31.9의 수정·로그 지점을 대조했다.
 - **확인된 사실 — 자체 랩 기록**: 특정 NGINX 1.31.8 환경에서 크래시가 관측됐고, 동일
-  실행 프로파일의 10회 기록에 worker 계정이 만든 확인용 파일과 소유자가 남았다. 이 기록은
+  실행 프로파일의 10회 기록에 worker 계정이 만든 확인용 파일과 소유자가 남았다. 성공
+  재현 1회의 컨테이너 로그 전량 수집(ep12-verif)으로 §5-4의 탐지 흔적 — 캐리어
+  `request_length=50331645` 320건, 단일 커넥션 `requests=519`, worker SIGCHLD,
+  stderr의 glibc 메시지, 시그널 6/11 구분 — 도 확인했다. 이 기록은
   운영 환경의 공격 성공률이나 호스트 root 획득을 입증하지 않는다.
 - **운영에서 확인할 전제**: 실제 패치 포함 여부, 실행 중 바이너리, 유효 설정과 직접 접근
   경로다. 이 중 미확인 항목이 있으면 해당 자산의 방어 효과는 관측불가로 남긴다.
