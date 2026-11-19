@@ -113,6 +113,18 @@ services:
       - cores:/cores
     depends_on: [dnssim]
 
+  cve123634srv:
+    <<: *nginx-base
+    image: nginx2root/lab:1.31.8
+    container_name: n2r-123634srv
+    profiles: [cve123634srv]
+    ports: ["8450:443"]
+    volumes:
+      # e39708edc 커밋 시나리오 변형: upstream resolve + mirror (run_123634srv.sh)
+      - ./conf/upstream-resolve.conf:/usr/local/nginx/conf/nginx.conf:ro
+      - cores:/cores
+    depends_on: [dnssim]
+
   cve121810:
     <<: *nginx-base
     build:
