@@ -301,6 +301,24 @@ stdout 수집 경로를 확인한다. `kubectl logs`가 비어 있어도 파일�
   debug로 바뀌었다. resolver 경로 조사에 쓰되 메시지 하나로 RCE를 확정하거나, 패치 뒤
   메시지가 사라졌다는 이유로 패치 완료를 판단하지 않는다.
 
+### 5-4. 랩 재현에서 직접 확인한 로그 흔적 [실측·단일 PoC 프로파일]
+
+자체 랩에서 공개 PoC 체인을 실제로 성공시킨 episode(ep12-verif, 119 GiB/312초)의 타깃
+컨테이너 로그 전량을 수집해 확인한 흔적이다. 단일 PoC 프로파일의 실측이므로 다른 변종이
+같은 흔적을 남긴다고 단정하지 않는다. (`exploit/results/.../ep12-verif/target_container_logs.txt`)
+
+| 로그 흔적 | 실측 내용 | 해석 |
+|---|---|---|
+| access.log의 캐리어 요청 | `request_length=50331645` × 320줄 (한 출발지·수 분) | 캐리어 HEAD 요청 1건 = HEADERS+CONTINUATION 3프레임 합계(3×16,777,215). **"max frame size 정수배의 초대형 request_length 다발"**이 흔적. `$request_length` 미수집 포맷에서는 보이지 않음 |
+| access.log의 커넥션 요청 수 | 단일 커넥션 `requests=519` | 공개 PoC 회계와 정확히 일치. `$connection_requests` 수집이 전제 |
+| worker의 SIGCHLD 로그 | `signal 17 (SIGCHLD) received from 23` | **worker가 자식 프로세스를 포크·회수했다**는 뜻. 정상 NGINX worker는 자식을 포크하지 않음. `system()` 실행 시각과 일치했음 |
+| stderr의 glibc 메시지 | `double free or corruption (!prev)` | 힙 손상을 glibc가 감지한 텍스트 증거. **nginx error.log가 아니라 프로세스 stderr**로 나가므로 컨테이너/서비스 매니저 로그 수집 경로가 이 라인을 놓치지 않아야 함 |
+| worker 종료 시그널 | 성공 재현은 `exited on signal 6`(SIGABRT), 크래시 시도는 `signal 11`(SIGSEGV) | 사망 방식이 다르다 — 6은 실행 후 지연 붕괴, 11은 실행 전 접근 위반. 두 시그널 모두 조사 대상 |
+
+`request_length` 값 하나·glibc 메시지 하나를 단독 경보로 쓰기보다, 위 흔적과 §5-1의
+실행 감시·§5-2의 연결 수신량을 같은 타임라인으로 연결해 판정한다. glibc 메시지는
+**힙 손상이 발생했다는 증거일 뿐** 악용 성공 여부와는 별개 판정이다.
+
 크래시는 OOMKilled/SIGKILL, 계획된 worker 교체, 다른 모듈 오류와 구별한다. **크래시와
 의심스러운 연결이 겹치면 공격 시도 가설은 지지됨**으로 조사하되 코드 실행은 별도 증거로
 판정한다. 센서가 없거나 수집에 실패한 경우의 공격 여부는 관측불가다.
